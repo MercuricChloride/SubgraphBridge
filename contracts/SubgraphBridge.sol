@@ -51,7 +51,8 @@ contract SubgraphBridge {
     mapping (bytes32 => PinnedBlockProposals) public bridgeProposals;
     // {pinnedBlockHash} -> {block number}
     mapping (bytes32 => uint256) public bridgeConflictResolutionBlock;
-    uint256 public pinnedBlockNumber;
+    uint256 public pinnedBlockNumber;   // block number when last proposal was executed
+    bytes32 public pinnedBlockState;    // state of the rollup at pinnedBlockNumber
 
     constructor(address staking, address disputeManager) {
         theGraphStaking = staking;
@@ -108,15 +109,16 @@ contract SubgraphBridge {
     }
 
     function executeProposal(
-        bytes32 pinnedBlockHash
+        bytes32 pinnedBlockHash,
+        bytes32 stateHash
     ) public {
         PinnedBlockProposals storage proposals = bridgeProposals[pinnedBlockHash];
         require(proposals.proposalCount == 1, "proposalCount must be 1");
+        require(proposals.stake[stateHash].totalStake.attestationStake > 0, "invalid stateHash");
         require(proposals.pinnedBlockNumber + PROPOSAL_FREEZE_PERIOD > block.number, "proposal still in challenge window");
         require(proposals.pinnedBlockNumber > pinnedBlockNumber, "block already synced");
         pinnedBlockNumber = proposals.pinnedBlockNumber;
-        
-        // todo: bridge/unfurl state hash
+        pinnedBlockState = stateHash;
     }
 
     function resolveDispute(
