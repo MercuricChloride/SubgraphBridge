@@ -3,7 +3,7 @@
 The purpose of a subgraph bridge is to utilize The Graph's decentralized network as a computation oracle for EVM compatible blockchains. This allows smart contracts to consume subgraph-derived data with configurable cryptoeconomic security requirements. Verifiable queries with shell proofs will eventually allow smart contracts to verify the integrity of subgraph queries during execution. This unlocks new subgraph-centric design patterns which can be emulated with a subgraph bridge given configurable sacrifices to decentralization, speed, and capital efficiency.
 
 # Testing
-To properly test the bridge we need to fork mainnet from a recent block so that the allocations referred to by Indexer attestations are available in the staking contract. The following is a useful setup for testing.
+To properly test the bridge we need to fork mainnet from a recent block so that the allocations referred to by Indexer attestations are available in the staking contract. The following is a useful setup for testing. Run ```npm install``` first to install all dependencies.
 
 1. Set ```MAINNET_URL``` in ```.env``` to an Ethereum archive node. Alchemy offers this for free.
 2. Set ```THE_GRAPH_GATEWAY_ENDPOINT``` in ```.env``` to the Emblem subgraph running on the decentralized network with your consumer API key. Example: https://gateway.thegraph.com/api/[api-key]/subgraphs/id/BKWqzRUajb4zK3X8LwwEACH2tVgprgEE8ZdsHdknxQEk
@@ -12,4 +12,6 @@ To properly test the bridge we need to fork mainnet from a recent block so that 
 5. Start a local Hardhat node in a new shell: ```npx hardhat node```
 6. Deploy a SubgraphBridge contract: ```npx hardhat deploySubgraphBridge --network localhost```
 7. Set ```SUBGRAPH_BRIDGE_CONTRACT_ADDRESS``` in ```bridge-tasks.ts``` to the address logged in #6.
-8. Query The Graph's Decentralized Network and submit response to SubgraphBridge contract: ```npx hardhat createBridgeProposal --network localhost```
+8. Query The Graph's Decentralized Network and submit response and indexer attestation to SubgraphBridge contract: ```npx hardhat pinQueryResponse --network localhost```
+9. Push response to data stream with ```QueryBridgeStrategy.proposalFreezePeriod``` of 0: ```npx hardhat executeQueryResponse --network localhost```
+10. Read from data stream: ```npx hardhat readDataStream --network localhost```
