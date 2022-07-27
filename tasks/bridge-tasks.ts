@@ -3,16 +3,25 @@ import * as graphAddresses from "@graphprotocol/contracts/addresses.json";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 require("isomorphic-fetch");
 
-const SUBGRAPH_BRIDGE_CONTRACT_ADDRESS = "0xAe120F0df055428E45b264E7794A18c54a2a3fAF";
+const SUBGRAPH_BRIDGE_CONTRACT_ADDRESS = "0x547382C0D1b23f707918D3c83A77317B71Aa8470";
 
 const BRIDGE_QUERY_BLOCKS_BACK = 10;
-const QUERY_BRIDGE_SUBGRAPH_DEPLOYMENT_ID = "0x66b8f5c7569d0a1243428ebf1912ec1a7c33081fd2ef418228a18deb4acc98f1";
-const BRIDGE_QUERY_STRIPPED_STRING = "{earnedBadges(first:1,orderBy:blockAwarded,orderDirection:desc,block:{hash:\"\"}){transactionHash}}";
 
-
-interface BridgeProposal {
-    (hre: HardhatRuntimeEnvironment, attestation: string, response: string): void;
+const DEFAULT_QUERY_TEMPLATE_STRING = "{earnedBadges(first:1,orderBy:blockAwarded,orderDirection:desc,block:{hash:\"\"}){transactionHash}}";
+const DEFAULT_QUERY_BRIDGE: QueryBridge = {
+    queryTemplate: "0xb99f5bca1efe856274c3e77ffc53804e487f7a11ec88fa040784e2973d481867",
+    subgraphDeploymentID: "0x66b8f5c7569d0a1243428ebf1912ec1a7c33081fd2ef418228a18deb4acc98f1",
+    blockHashOffset: 76,
+    responseDataOffset: 47,
+    proposalFreezePeriod: 0,
+    minimumSlashableGRT: 1,
+    minimumExternalStake: 0,
+    disputeResolutionWindow: 0,
+    resolutionThresholdSlashableGRT: 50,    // disputed proposals must have at least 50% stake to resolve
+    resolutionThresholdExternalStake: 0,
+    stakingToken: "0xc944E90C64B2c07662A292be6244BDf05Cda44a7" // GRT
 }
+
 
 task("deploySubgraphBridge", "Deploys SubgraphBridge contract")
 .setAction(async (taskArgs, hre) => {
@@ -23,6 +32,11 @@ task("deploySubgraphBridge", "Deploys SubgraphBridge contract")
     await subgraphBridgeContract.deployed();
     console.log("SubgraphBridge contract deployed to: " + subgraphBridgeContract.address);
 });
+
+task("createQueryBridge", "creates a query bridge using DEFAULT_QUERY_BRIDGE")
+.setAction(async (taskArgs, hre) => {
+    await createQueryBridge(hre);
+})
 
 task("pinQueryResponse", "pins a block hash to a query response proposal")
 .setAction(async (taskArgs, hre) => {
@@ -44,6 +58,16 @@ task("readDataStream", "reads from a data stream of secured data")
     await readDataStream(hre);
 });
 
+async function createQueryBridge(hre: HardhatRuntimeEnvironment) {
+    const subgraphBridgeContractFactory = await hre.ethers.getContractFactory("SubgraphBridge");
+    const subgraphBridgeContract = await subgraphBridgeContractFactory.attach(SUBGRAPH_BRIDGE_CONTRACT_ADDRESS);
+    await subgraphBridgeContract.hashQueryTemplate(DEFAULT_QUERY_BRIDGE.queryTemplate);
+
+    await subgraphBridgeContract.createQueryBridge(DEFAULT_QUERY_BRIDGE);
+    const qID = await defaultQueryBridgeID(hre);
+    console.log("query bridge ID: " + qID);
+}
+
 async function pinProposal(hre: HardhatRuntimeEnvironment, attestation: string, response: string) {
     const parsedAttestation = JSON.parse(attestation) as Attestation;
 
@@ -51,13 +75,14 @@ async function pinProposal(hre: HardhatRuntimeEnvironment, attestation: string, 
     const subgraphBridgeContract = await subgraphBridgeContractFactory.attach(SUBGRAPH_BRIDGE_CONTRACT_ADDRESS);
     const attestationData = attestationBytesFromJSON(hre, parsedAttestation);
     const bQuery = await bridgeQuery(hre);
+    console.log("Bridge Query: " + bQuery);
     const bQueryBlockNumber = await hre.ethers.provider.getBlockNumber() - BRIDGE_QUERY_BLOCKS_BACK;
 
     await subgraphBridgeContract.pinQueryBridgeProposal(
         bQueryBlockNumber,
         bQuery,
         response,
-        DEFAULT_QUERY_BRIDGE_STRATEGY.requestBlockHashOffset,
+        defaultQueryBridgeID(hre),
         attestationData
     );
 }
@@ -68,12 +93,13 @@ async function submitProposal(hre: HardhatRuntimeEnvironment, attestation: strin
     const subgraphBridgeContractFactory = await hre.ethers.getContractFactory("SubgraphBridge");
     const subgraphBridgeContract = await subgraphBridgeContractFactory.attach(SUBGRAPH_BRIDGE_CONTRACT_ADDRESS);
     const attestationData = attestationBytesFromJSON(hre, parsedAttestation);
-    console.log("submitting attestation to bridge:\n" + attestation + "\n");
     const bQuery = await bridgeQuery(hre);
+    console.log("Bridge Query: " + bQuery);
+
     await subgraphBridgeContract.submitQueryBridgeProposal(
         bQuery,
         response,
-        DEFAULT_QUERY_BRIDGE_STRATEGY.requestBlockHashOffset+2,
+        defaultQueryBridgeID(hre),
         attestationData
     );
 }
@@ -99,8 +125,7 @@ async function executeProposal(hre: HardhatRuntimeEnvironment) {
         queryString, 
         requestCID, 
         responseString, 
-        QUERY_BRIDGE_SUBGRAPH_DEPLOYMENT_ID,
-        DEFAULT_QUERY_BRIDGE_STRATEGY
+        defaultQueryBridgeID(hre)
     );
 }
 
@@ -108,10 +133,8 @@ async function readDataStream(hre: HardhatRuntimeEnvironment) {
     const subgraphBridgeContractFactory = await hre.ethers.getContractFactory("SubgraphBridge");
     const subgraphBridgeContract = await subgraphBridgeContractFactory.attach(SUBGRAPH_BRIDGE_CONTRACT_ADDRESS);
 
-    const dataStreamID = await subgraphBridgeContract.test_dataStreamIDs(0);
-    const queryBlockHash = await subgraphBridgeContract.test_pinnedBlockHashes(0);
-    // todo: compute dataStreamID and block hash
-    const d = await subgraphBridgeContract.dataStreams(dataStreamID, queryBlockHash);
+    const queryBlockHash = await subgraphBridgeContract.test_pinnedBlocks(0);
+    const d = await subgraphBridgeContract.dataStreams(defaultQueryBridgeID(hre), queryBlockHash);
     console.log("data stream: " + d);
 }
 
@@ -141,11 +164,9 @@ async function bridgeQuery(hre: HardhatRuntimeEnvironment) {
     const blockNumberToQuery = await hre.ethers.provider.getBlockNumber() - BRIDGE_QUERY_BLOCKS_BACK;
     const blockToQuery = await hre.ethers.provider.getBlock(blockNumberToQuery);
 
-    const q = BRIDGE_QUERY_STRIPPED_STRING.substring(0, DEFAULT_QUERY_BRIDGE_STRATEGY.requestBlockHashOffset) + 
+   return DEFAULT_QUERY_TEMPLATE_STRING.substring(0, DEFAULT_QUERY_BRIDGE.blockHashOffset) + 
         blockToQuery.hash + 
-        BRIDGE_QUERY_STRIPPED_STRING.substring(DEFAULT_QUERY_BRIDGE_STRATEGY.requestBlockHashOffset);
-    console.log("Bridge Query: " + q);
-    return q;
+        DEFAULT_QUERY_TEMPLATE_STRING.substring(DEFAULT_QUERY_BRIDGE.blockHashOffset);
 }
 
 interface Attestation {
@@ -157,49 +178,55 @@ interface Attestation {
     v: number
 }
 
+interface BridgeProposal {
+    (hre: HardhatRuntimeEnvironment, attestation: string, response: string): void;
+}
 
-interface QueryBridgeStrategy {
-    requestBlockHashOffset: number
+interface QueryBridge {
+    queryTemplate: string,
+    subgraphDeploymentID: string,
+    blockHashOffset: number
     responseDataOffset: number,
     proposalFreezePeriod: number,
     minimumSlashableGRT: number,
 
-    // not yet implemented
+    // dispute handling
     minimumExternalStake: number,
-    stakingToken: string,
     disputeResolutionWindow: number,
     resolutionThresholdSlashableGRT: number,
-    resolutionThresholdExternalStake: number
+    resolutionThresholdExternalStake: number,
+    stakingToken: string
 }
 
-const DEFAULT_QUERY_BRIDGE_STRATEGY: QueryBridgeStrategy = {
-    requestBlockHashOffset: 76,
-    responseDataOffset: 47,
-    proposalFreezePeriod: 0,
-    minimumSlashableGRT: 1,
-    minimumExternalStake: 0,
-    stakingToken: "0xc944E90C64B2c07662A292be6244BDf05Cda44a7", // GRT
-    disputeResolutionWindow: 0,
-    resolutionThresholdSlashableGRT: 50,    // disputed proposals must have at least 50% stake to resolve
-    resolutionThresholdExternalStake: 0
-}
-
-function queryBridgeID(hre: HardhatRuntimeEnvironment, strippedQueryHash: string, subgraphDeploymentID: string) {
-    const encodedBridge = hre.ethers.utils.defaultAbiCoder.encode(["bytes32","bytes32"], [
-        strippedQueryHash,
-        subgraphDeploymentID
+function queryBridgeID(hre: HardhatRuntimeEnvironment, queryBridge: QueryBridge) {
+    const encodedBridge = hre.ethers.utils.defaultAbiCoder.encode(["bytes32","bytes32","uint16","uint16","uint8","uint8","uint8","uint8","uint8","uint8","address"], [
+        queryBridge.queryTemplate,
+        queryBridge.subgraphDeploymentID,
+        queryBridge.blockHashOffset,
+        queryBridge.responseDataOffset,
+        queryBridge.proposalFreezePeriod,
+        queryBridge.minimumSlashableGRT,
+        queryBridge.minimumExternalStake,
+        queryBridge.disputeResolutionWindow,
+        queryBridge.resolutionThresholdSlashableGRT,
+        queryBridge.resolutionThresholdExternalStake,
+        queryBridge.stakingToken
     ]);
 
     return hre.ethers.utils.keccak256(encodedBridge);
 }
 
 function defaultQueryBridgeID(hre: HardhatRuntimeEnvironment) {
-    return queryBridgeID(hre, strippedBridgeQueryHash(hre), QUERY_BRIDGE_SUBGRAPH_DEPLOYMENT_ID);
+    return queryBridgeID(hre, DEFAULT_QUERY_BRIDGE);
 }
 
-function strippedBridgeQueryHash(hre: HardhatRuntimeEnvironment) {
-    return hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes(BRIDGE_QUERY_STRIPPED_STRING));
-};
+function defaultQueryTemplateHash(hre: HardhatRuntimeEnvironment) {
+    const encodedQueryTemplate = hre.ethers.utils.defaultAbiCoder.encode(["string"], [
+        DEFAULT_QUERY_BRIDGE.queryTemplate
+    ]);
+
+    return hre.ethers.utils.keccak256(encodedQueryTemplate);
+}
 
 function attestationBytesFromJSON(hre: HardhatRuntimeEnvironment, attestation: Attestation) {
     return hre.ethers.utils.hexConcat([

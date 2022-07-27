@@ -11,11 +11,10 @@ pragma solidity ^0.8.0;
 
 contract SubgraphBridge {
 
-    // address public theGraphController;
     address public theGraphStaking;
     address public theGraphDisputeManager;
 
-    // ID: attestation.requestCID
+    // stored in mapping where (ID == attestation.requestCID)
     struct QueryBridgeProposals {
         // {attestation.responseCID} -> {stake}
         mapping (bytes32 => BridgeStake) stake;
@@ -33,66 +32,59 @@ contract SubgraphBridge {
         uint256 tokenStake;         // GRT staked by oracles through Subgraph Bridge contract
     }
 
-    // oracles feed data to a query bridge without specifying a strategy, which is only important during unfurling
     struct QueryBridge {
-        bytes32 trimmedQueryHash;                   // hash of query stripped of all query variables
+        bytes32 queryTemplate;                      // hash of query stripped of all query variables
         bytes32 subgraphDeploymentID;               // subgraph being queried
-    }
+        uint16 blockHashOffset;                     // where the pinned block hash starts in the query string
+        uint16 responseDataOffset;                  // index where the data starts in the response string
+        
+        // security requirements native to The Graph
+        uint8 proposalFreezePeriod;                 // undisputed queries can only be executed after this many blocks
+        uint8 minimumSlashableGRT;                  // minimum slashable GRT staked by indexers in order for undisputed proposal to pass
 
-    struct QueryBridgeStrategy {
-        // request/response string parsing
-        uint256 requestBlockHashOffset;             // index where block hash starts in query
-        uint256 responseDataOffset;                 // index where 32 byte hex string starts
-
-        // security requirements for bridged data
-        uint256 proposalFreezePeriod;               // undisputed proposals can only be executed after this many blocks
-        uint256 minimumSlashableGRT;                // minimum slashable GRT staked by indexers in order for undisputed proposal to pass
-
-        // not yet implemented
-        uint256 minimumExternalStake;               // minimum external tokens staked in order for undisputed proposal to pass
-        address stakingToken;                       // erc20 token for external staking
-        uint256 disputeResolutionWindow;            // how many blocks it takes for disputes to be settled (0 indicates no dispute resolution)
+        // dispute handling config
+        uint8 minimumExternalStake;                 // minimum external tokens staked in order for undisputed proposal to pass
+        uint8 disputeResolutionWindow;              // how many blocks it takes for disputes to be settled (0 indicates no dispute resolution)
         uint8 resolutionThresholdSlashableGRT;      // (30-99) percent of slashable GRT required for dispute resolution
         uint8 resolutionThresholdExternalStake;     // (30-99) percentage of external stake required for dispute resolution
+        address stakingToken;                       // erc20 token for external staking
     }
 
-
-    function _queryBridgeID(bytes32 trimmedQueryHash, bytes32 subgraphDeploymentID) public view returns (bytes32) {
-        console.log("trimmed query hash:::");
-        console.logBytes32(trimmedQueryHash);
+    function _queryBridgeID(QueryBridge memory queryBridge) public view returns (bytes32) {
         return keccak256(abi.encode(
-            trimmedQueryHash,
-            subgraphDeploymentID
+            queryBridge.queryTemplate,
+            queryBridge.subgraphDeploymentID,
+            queryBridge.blockHashOffset,
+            queryBridge.responseDataOffset,
+            queryBridge.proposalFreezePeriod,
+            queryBridge.minimumSlashableGRT,
+            queryBridge.minimumExternalStake,
+            queryBridge.disputeResolutionWindow,
+            queryBridge.resolutionThresholdSlashableGRT,
+            queryBridge.resolutionThresholdExternalStake,
+            queryBridge.stakingToken
         ));
     }
 
-    function queryBridgeStrategyID(QueryBridgeStrategy memory strategy) public view returns (bytes32) {
-        return keccak256(abi.encodePacked(
-            strategy.requestBlockHashOffset,
-            strategy.responseDataOffset,
-            strategy.proposalFreezePeriod,
-            strategy.minimumSlashableGRT,
-            strategy.minimumExternalStake,
-            strategy.stakingToken,
-            strategy.disputeResolutionWindow,
-            strategy.resolutionThresholdSlashableGRT,
-            strategy.resolutionThresholdExternalStake
-        ));
-    }
 
-    function generateTrimmedQueryHash(
+    // returns keccak of query string without block hash
+    // todo: support other query variables (address, BigInt)
+    function _generateQueryTemplateHash(
         string calldata query,
         uint256 blockHashOffset
     ) public view returns (bytes32) {
-        bytes memory trimmedQuery = bytes.concat(
+        bytes memory queryTemplate = bytes.concat(
             bytes(query)[:blockHashOffset],
             bytes(query)[blockHashOffset+66:]
         );
-        return keccak256(trimmedQuery);
+        return keccak256(queryTemplate);
     }
 
     // {block hash} -> {block number}
-    mapping (bytes32 => uint256) public pinnedBlockHashes;
+    mapping (bytes32 => uint256) public pinnedBlocks;
+
+    // {QueryBridgeID} -> {QueryBridge}
+    mapping (bytes32 => QueryBridge) public queryBridges;
 
     // {QueryBridgeID} -> {attestation.requestCID} -> {QueryBridgeProposals}
     mapping (bytes32 => mapping (bytes32 => QueryBridgeProposals)) public queryBridgeProposals;
@@ -101,7 +93,7 @@ contract SubgraphBridge {
     // {QueryBridgeID} -> {query block hash} -> {block number}
     mapping (bytes32 => mapping (bytes32 => uint256)) public bridgeConflictResolutionBlock;
 
-    // {hash(QueryBridgeID,QueryBridgeStrategyID)} -> {block hash} -> {responseData}
+    // {QueryBridgeID} -> {block hash} -> {responseData}
     mapping (bytes32 => mapping (bytes32 => bytes32)) public dataStreams;
 
     ///////////////////////////////////////////////
@@ -109,7 +101,7 @@ contract SubgraphBridge {
     string[] public test_queries;
     bytes32[] public test_requestCIDs;
     string[] public test_queryResponses;
-    bytes32[] public test_pinnedBlockHashes;
+    bytes32[] public test_pinnedBlocks;
     bytes32[] public test_dataStreamIDs;
     ///////////////////////////////////////////////
 
@@ -118,40 +110,50 @@ contract SubgraphBridge {
         theGraphDisputeManager = disputeManager;
     }
 
+    function hashQueryTemplate(string memory queryTemplate) public {
+        bytes32 queryTemplateHash = keccak256(abi.encode(queryTemplate));
+        console.logBytes32(queryTemplateHash);
+    }
+
+    function createQueryBridge(QueryBridge memory queryBridge) public {
+        bytes32 queryBridgeID = _queryBridgeID(queryBridge);
+        queryBridges[queryBridgeID] = queryBridge;
+        console.log("created query bridge with id: ");
+        console.logBytes32(queryBridgeID);
+    }
+
+    function pinBlockHash(uint256 blockNumber) public {
+        pinnedBlocks[blockhash(blockNumber)] = blockNumber;
+    }
+
     function pinQueryBridgeProposal(
         uint256 blockNumber,
         string calldata query,
         string calldata response,
-        uint256 blockHashOffset,
+        bytes32 queryBridgeID,
         bytes calldata attestationData
     ) public {
         bytes32 pinnedBlockHash = blockhash(blockNumber);
-        pinnedBlockHashes[pinnedBlockHash] = blockNumber;
+        pinnedBlocks[pinnedBlockHash] = blockNumber;
 
         console.log("pinned block hash:::");
         console.logBytes32(pinnedBlockHash);
-        test_pinnedBlockHashes.push(pinnedBlockHash);
+        test_pinnedBlocks.push(pinnedBlockHash);
         
-        submitQueryBridgeProposal(query, response, blockHashOffset, attestationData);
+        submitQueryBridgeProposal(query, response, queryBridgeID, attestationData);
     }
 
 
     function submitQueryBridgeProposal(
         string calldata query,      // only needed for emitting event
         string calldata response,   // only needed for emitting event
-        uint256 blockHashOffset,
+        bytes32 queryBridgeID,
         bytes calldata attestationData
     ) public {
+        require(queryBridges[queryBridgeID].blockHashOffset > 0, "query bridge doesn't exist");
         
         IDisputeManager.Attestation memory attestation = _parseAttestation(attestationData);
-        require(queryAndResponseMatchAttestation(query, response, attestation), "query/response != attestation");
-        bytes32 trimmedQueryHash = generateTrimmedQueryHash(query, blockHashOffset);
-        bytes32 queryBridgeID = _queryBridgeID(trimmedQueryHash, attestation.subgraphDeploymentID);
-
-        console.log("query bridge ID called:::");
-        console.logBytes32(trimmedQueryHash);
-        console.logBytes32(attestation.subgraphDeploymentID);
-        console.logBytes32(queryBridgeID);
+        require(_queryAndResponseMatchAttestation(query, response, attestation), "query/response != attestation");
 
         // get indexer's slashable stake from staking contract
         address attestationIndexer = IDisputeManager(theGraphDisputeManager).getAttestationIndexer(attestation);
@@ -166,6 +168,10 @@ contract SubgraphBridge {
         if (proposals.stake[attestation.responseCID].totalStake.attestationStake == 0) {
             console.log("proposal count++");
             proposals.proposalCount = proposals.proposalCount + 1;
+
+            uint16 blockHashOffset = queryBridges[queryBridgeID].blockHashOffset;
+            bytes32 queryBlockHash = _bytes32FromStringWithOffset(query, blockHashOffset+2); // todo: why +2?
+            require(pinnedBlocks[queryBlockHash] > 0, "block hash unpinned");
         }
 
         // update stake values
@@ -186,16 +192,20 @@ contract SubgraphBridge {
         string calldata query,
         bytes32 requestCID,     // todo: remove once we solve (query -> requestCID) mystery
         string calldata response,
-        bytes32 subgraphDeploymentID,
-        QueryBridgeStrategy memory strategy
+        bytes32 queryBridgeID
     ) public {
-        bytes32 queryBlockHash = bytes32FromStringWithOffset(query, strategy.requestBlockHashOffset+2); // todo: why +2?
-        console.logBytes32(queryBlockHash);
-        require(pinnedBlockHashes[queryBlockHash] > 0, "block hash unpinned");
-        require(pinnedBlockHashes[queryBlockHash] + strategy.proposalFreezePeriod <= block.number, "proposal still frozen");
+        uint16 blockHashOffset = queryBridges[queryBridgeID].blockHashOffset;
+        bytes32 queryBlockHash = _bytes32FromStringWithOffset(query, blockHashOffset+2); // todo: why +2?
+        bytes32 queryTemplateHash = queryBridges[queryBridgeID].queryTemplate;
+        bytes32 subgraphDeploymentID = queryBridges[queryBridgeID].subgraphDeploymentID;
+        uint8 proposalFreezePeriod = queryBridges[queryBridgeID].proposalFreezePeriod;
+        uint8 minimumSlashableGRT = queryBridges[queryBridgeID].minimumSlashableGRT;
+        uint16 responseDataOffset = queryBridges[queryBridgeID].responseDataOffset;
 
-        bytes32 trimmedQueryHash = generateTrimmedQueryHash(query, strategy.requestBlockHashOffset); // todo: why +2?
-        bytes32 queryBridgeID = _queryBridgeID(trimmedQueryHash, subgraphDeploymentID);
+        console.logBytes32(queryBlockHash);
+        require(pinnedBlocks[queryBlockHash] + proposalFreezePeriod <= block.number, "proposal still frozen");
+
+        bytes32 trimmedQueryHash = queryBridges[queryBridgeID].queryTemplate; // todo: why +2?
         console.log("query bridge ID called:::");
         console.logBytes32(trimmedQueryHash);
         console.logBytes32(subgraphDeploymentID);
@@ -205,18 +215,15 @@ contract SubgraphBridge {
         require(proposals.proposalCount == 1, "proposalCount must be 1");
         bytes32 responseCID = keccak256(abi.encodePacked(response));
         
-        require(proposals.stake[responseCID].totalStake.attestationStake > strategy.minimumSlashableGRT, "not enough stake");
+        require(proposals.stake[responseCID].totalStake.attestationStake > minimumSlashableGRT, "not enough stake");
 
-        bytes32 strategyID = queryBridgeStrategyID(strategy);
-        bytes32 dataStreamID = keccak256(abi.encode(queryBridgeID, strategyID));
-        dataStreams[dataStreamID][queryBlockHash] = bytes32FromStringWithOffset(response, strategy.responseDataOffset);
+        dataStreams[queryBridgeID][queryBlockHash] = _bytes32FromStringWithOffset(response, responseDataOffset);
 
-        console.logBytes32(dataStreamID);
         console.logBytes32(queryBlockHash);
-        test_dataStreamIDs.push(dataStreamID);
+        test_dataStreamIDs.push(queryBridgeID);
     }
 
-    function queryAndResponseMatchAttestation(
+    function _queryAndResponseMatchAttestation(
         string calldata query, 
         string calldata response, 
         IDisputeManager.Attestation memory attestation
@@ -226,17 +233,17 @@ contract SubgraphBridge {
         return (attestation.responseCID == keccak256(abi.encodePacked(response)));
     }
 
-    function bytes32FromStringWithOffset(string calldata fullString, uint256 dataOffset) public view returns (bytes32) {
+    function _bytes32FromStringWithOffset(string calldata fullString, uint16 dataOffset) public view returns (bytes32) {
         string memory blockHashSlice = string(fullString[
             dataOffset : dataOffset+64
         ]);
         console.log(fullString);
         console.log(blockHashSlice);
-        return bytes32FromHex(blockHashSlice);
+        return _bytes32FromHex(blockHashSlice);
     }
 
     // Convert an hexadecimal character to raw byte
-    function fromHexChar(uint8 c) public pure returns (uint8) {
+    function _fromHexChar(uint8 c) public pure returns (uint8) {
         if (bytes1(c) >= bytes1('0') && bytes1(c) <= bytes1('9')) {
             return c - uint8(bytes1('0'));
         }
@@ -246,12 +253,12 @@ contract SubgraphBridge {
     }
 
     // Convert hexadecimal string to raw bytes32
-    function bytes32FromHex(string memory s) public pure returns (bytes32 result) {
+    function _bytes32FromHex(string memory s) public pure returns (bytes32 result) {
         bytes memory ss = bytes(s);
         require(ss.length == 64, "length of hex string must be 64");
         bytes memory bytesResult = new bytes(32);
         for (uint i=0; i<ss.length/2; ++i) {
-            bytesResult[i] = bytes1(fromHexChar(uint8(ss[2*i])) * 16 + fromHexChar(uint8(ss[2*i+1])));
+            bytesResult[i] = bytes1(_fromHexChar(uint8(ss[2*i])) * 16 + _fromHexChar(uint8(ss[2*i+1])));
         }
 
         assembly {
