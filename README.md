@@ -12,6 +12,7 @@ To properly test the bridge we need to fork mainnet from a recent block so that 
 5. Start a local Hardhat node in a new shell: ```npx hardhat node```
 6. Deploy a SubgraphBridge contract: ```npx hardhat deploySubgraphBridge --network localhost```
 7. Set ```SUBGRAPH_BRIDGE_CONTRACT_ADDRESS``` in ```bridge-tasks.ts``` to the address logged in #6.
-8. Query The Graph's Decentralized Network and submit response and indexer attestation to SubgraphBridge contract: ```npx hardhat pinQueryResponse --network localhost```
-9. Push response to data stream with ```QueryBridgeStrategy.proposalFreezePeriod``` of 0: ```npx hardhat executeQueryResponse --network localhost```
-10. Read from data stream: ```npx hardhat readDataStream --network localhost```
+8. Create a query bridge with default values and {badgeWinner(block:{hash:""},id:"",first:){votingPower}} query template: ```npx hardhat createQueryBridge --network localhost```
+9. Query The Graph's Decentralized Network and submit response and indexer attestation to the QueryBridge: ```npx hardhat pinQueryResponse --network localhost```
+10. Push response to data stream: ```npx hardhat executeQueryResponse --network localhost```
+11. Read from data stream: ```npx hardhat readDataStream --network localhost```

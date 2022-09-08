@@ -11,6 +11,13 @@ pragma solidity ^0.8.0;
 
 contract SubgraphBridge {
 
+    enum BridgeDataType {
+        ADDRESS,
+        BYTES32,
+        UINT
+        // todo: string
+    }
+
     address public theGraphStaking;
     address public theGraphDisputeManager;
 
@@ -37,8 +44,9 @@ contract SubgraphBridge {
         bytes32 subgraphDeploymentID;               // subgraph being queried
         uint16 blockHashOffset;                     // where the pinned block hash starts in the query string
         uint16 responseDataOffset;                  // index where the data starts in the response string
+        BridgeDataType responseDataType;            // data type to be extracted from graphQL response string
+        uint16[2] queryVariables;                   // type stored in first byte, location in last
         
-        // security requirements native to The Graph
         uint8 proposalFreezePeriod;                 // undisputed queries can only be executed after this many blocks
         uint8 minimumSlashableGRT;                  // minimum slashable GRT staked by indexers in order for undisputed proposal to pass
 
@@ -51,33 +59,86 @@ contract SubgraphBridge {
     }
 
     function _queryBridgeID(QueryBridge memory queryBridge) public view returns (bytes32) {
-        return keccak256(abi.encode(
-            queryBridge.queryTemplate,
-            queryBridge.subgraphDeploymentID,
-            queryBridge.blockHashOffset,
-            queryBridge.responseDataOffset,
-            queryBridge.proposalFreezePeriod,
-            queryBridge.minimumSlashableGRT,
-            queryBridge.minimumExternalStake,
-            queryBridge.disputeResolutionWindow,
-            queryBridge.resolutionThresholdSlashableGRT,
-            queryBridge.resolutionThresholdExternalStake,
-            queryBridge.stakingToken
-        ));
+        return keccak256(abi.encode(queryBridge));
     }
 
 
-    // returns keccak of query string without block hash
-    // todo: support other query variables (address, BigInt)
+    // returns keccak of query string stripped of Query Variables and block hash
     function _generateQueryTemplateHash(
         string calldata query,
-        uint256 blockHashOffset
+        uint256 blockHashOffset,
+        uint16[2] memory queryVariables
     ) public view returns (bytes32) {
-        bytes memory queryTemplate = bytes.concat(
+
+        uint8 qv0Idx = uint8(queryVariables[0] >> 8);
+        uint8 qv0Length = _lengthForQueryVariable(qv0Idx, BridgeDataType(uint8(queryVariables[0])), query);
+        uint8 qv1Idx = uint8(queryVariables[1] >> 8) + qv0Idx + qv0Length;
+        uint8 qv1Length = _lengthForQueryVariable(qv1Idx, BridgeDataType(uint8(queryVariables[1])), query);
+
+        console.log("qv0idx qv0length qv1idx qv1length");
+        console.log(qv0Idx);    // index where qv1 starts
+        console.log(qv0Length);
+        console.log(qv1Idx);    // number of characters between end of qv0 and start of qv1
+        console.log(qv1Length);
+
+        bytes memory strippedQTemplate = bytes.concat(
             bytes(query)[:blockHashOffset],
-            bytes(query)[blockHashOffset+66:]
+            bytes(query)[blockHashOffset+66:qv0Idx]
         );
-        return keccak256(queryTemplate);
+
+        if (qv1Idx == 0) {
+            strippedQTemplate = bytes.concat(
+                strippedQTemplate,
+                bytes(query)[qv0Idx+qv0Length:]
+            );
+        } else {
+            strippedQTemplate = bytes.concat(
+                strippedQTemplate,
+                bytes(query)[qv0Idx+qv0Length:qv1Idx],
+                bytes(query)[qv1Idx+qv1Length:]
+            );
+        }
+
+
+        console.log("stripped query template");
+        console.log(string(strippedQTemplate));
+
+        return keccak256(abi.encode(strippedQTemplate));
+    }
+
+    function _lengthForQueryVariable(
+        uint8 qVariableIdx,
+        BridgeDataType qVariableType,
+        string calldata query
+    ) public view returns (uint8) {
+        if (qVariableType == BridgeDataType.ADDRESS) {
+            return 42;
+        } 
+        else if (qVariableType == BridgeDataType.BYTES32) {
+            return 66;
+        }
+        else {  // uint, string
+            return _dynamicLengthForQueryVariable(qVariableIdx, bytes(query));
+        }
+    }
+
+    function _dynamicLengthForQueryVariable(
+        uint8 qVariableIdx,
+        bytes calldata query
+    ) public view returns (uint8) {
+
+        uint8 length = 0;
+        bool shouldEscape = false;
+        while (!shouldEscape) {
+            bytes1 char = query[qVariableIdx + length];
+            console.logBytes1(char);
+            shouldEscape = (char == 0x7D || char == 0x2C || char == 0x29 || char == 0x22);     // ,})"
+            if (!shouldEscape) {
+                length += 1;
+            }
+        }
+
+        return length;
     }
 
     // {block hash} -> {block number}
@@ -90,11 +151,11 @@ contract SubgraphBridge {
     mapping (bytes32 => mapping (bytes32 => QueryBridgeProposals)) public queryBridgeProposals;
 
     // not yet implemented
-    // {QueryBridgeID} -> {query block hash} -> {block number}
+    // {QueryBridgeID} -> {attestation.requestCID} -> {block number}
     mapping (bytes32 => mapping (bytes32 => uint256)) public bridgeConflictResolutionBlock;
 
-    // {QueryBridgeID} -> {block hash} -> {responseData}
-    mapping (bytes32 => mapping (bytes32 => bytes32)) public dataStreams;
+    // {QueryBridgeID} -> {requestCID} -> {responseData}
+    mapping (bytes32 => mapping (bytes32 => uint256)) public dataStreams;
 
     ///////////////////////////////////////////////
     // not needed in production. useful for testing 
@@ -143,14 +204,22 @@ contract SubgraphBridge {
         submitQueryBridgeProposal(query, response, queryBridgeID, attestationData);
     }
 
+    function _queryMatchesBridge(
+        string calldata query,
+        bytes32 queryBridgeID
+    ) public returns (bool) {
+        QueryBridge memory bridge = queryBridges[queryBridgeID];
+        return (_generateQueryTemplateHash(query, bridge.blockHashOffset, bridge.queryVariables) == bridge.queryTemplate);
+    }
 
     function submitQueryBridgeProposal(
-        string calldata query,      // only needed for emitting event
-        string calldata response,   // only needed for emitting event
+        string calldata query,
+        string calldata response,
         bytes32 queryBridgeID,
         bytes calldata attestationData
     ) public {
         require(queryBridges[queryBridgeID].blockHashOffset > 0, "query bridge doesn't exist");
+        require(_queryMatchesBridge(query, queryBridgeID), "query doesn't fit template");
         
         IDisputeManager.Attestation memory attestation = _parseAttestation(attestationData);
         require(_queryAndResponseMatchAttestation(query, response, attestation), "query/response != attestation");
@@ -194,8 +263,8 @@ contract SubgraphBridge {
         string calldata response,
         bytes32 queryBridgeID
     ) public {
-        uint16 blockHashOffset = queryBridges[queryBridgeID].blockHashOffset;
-        bytes32 queryBlockHash = _bytes32FromStringWithOffset(query, blockHashOffset+2); // todo: why +2?
+        uint16 blockHashOffset = queryBridges[queryBridgeID].blockHashOffset+2;
+        bytes32 queryBlockHash = _bytes32FromStringWithOffset(query, blockHashOffset); // todo: why +2?
         bytes32 queryTemplateHash = queryBridges[queryBridgeID].queryTemplate;
         bytes32 subgraphDeploymentID = queryBridges[queryBridgeID].subgraphDeploymentID;
         uint8 proposalFreezePeriod = queryBridges[queryBridgeID].proposalFreezePeriod;
@@ -204,12 +273,7 @@ contract SubgraphBridge {
 
         console.logBytes32(queryBlockHash);
         require(pinnedBlocks[queryBlockHash] + proposalFreezePeriod <= block.number, "proposal still frozen");
-
-        bytes32 trimmedQueryHash = queryBridges[queryBridgeID].queryTemplate; // todo: why +2?
-        console.log("query bridge ID called:::");
-        console.logBytes32(trimmedQueryHash);
-        console.logBytes32(subgraphDeploymentID);
-        console.logBytes32(queryBridgeID);
+        require(_queryMatchesBridge(query, queryBridgeID), "query doesn't fit template");
 
         QueryBridgeProposals storage proposals = queryBridgeProposals[queryBridgeID][requestCID];
         require(proposals.proposalCount == 1, "proposalCount must be 1");
@@ -217,10 +281,20 @@ contract SubgraphBridge {
         
         require(proposals.stake[responseCID].totalStake.attestationStake > minimumSlashableGRT, "not enough stake");
 
-        dataStreams[queryBridgeID][queryBlockHash] = _bytes32FromStringWithOffset(response, responseDataOffset);
+        _extractData(queryBridgeID, requestCID, response);
 
-        console.logBytes32(queryBlockHash);
-        test_dataStreamIDs.push(queryBridgeID);
+        // test_dataStreamIDs.push(queryBridgeID);
+    }
+
+    function _extractData(bytes32 queryBridgeID, bytes32 requestCID, string calldata response) private {
+        uint responseT = uint(queryBridges[queryBridgeID].responseDataType);
+        console.log(responseT);
+        if (queryBridges[queryBridgeID].responseDataType == BridgeDataType.UINT) {
+            console.log("it's a uint response");
+            dataStreams[queryBridgeID][requestCID] = _uintFromString(response, queryBridges[queryBridgeID].responseDataOffset);
+            string memory s = response[queryBridges[queryBridgeID].responseDataOffset:];
+            console.log(s);
+        }
     }
 
     function _queryAndResponseMatchAttestation(
@@ -240,6 +314,32 @@ contract SubgraphBridge {
         console.log(fullString);
         console.log(blockHashSlice);
         return _bytes32FromHex(blockHashSlice);
+    }
+
+    function _uintFromString(string calldata str, uint256 offset) public view returns (uint256) {
+        (uint256 val,) = _uintFromByteString(bytes(str), offset);
+        string memory s = str[offset:];
+        console.log(s);
+        return val;
+    }
+
+    // takes a full query string or response string and extracts a uint of unknown length beginning at the specified index
+    function _uintFromByteString(
+        bytes memory bString,
+        uint256 offset
+    ) public view returns(uint256 value, uint256 depth) {
+
+        bytes1 char = bString[offset];
+        bool isEscapeChar = (char == 0x7D || char == 0x2C || char == 0x22);     // ,}"
+        if (isEscapeChar) {
+            return (0, 0);
+        }
+
+        bool isDigit = (uint8(char) >= 48) && (uint8(char) <= 57);              // 0-9
+        require(isDigit, "invalid char");
+
+        (uint256 trailingVal, uint256 trailingDepth) = _uintFromByteString(bString, offset + 1);
+        return (trailingVal + (uint8(char) - 48) * 10**(trailingDepth), trailingDepth + 1);
     }
 
     // Convert an hexadecimal character to raw byte
