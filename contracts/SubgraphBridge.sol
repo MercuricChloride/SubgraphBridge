@@ -1,3 +1,4 @@
+pragma solidity ^0.8.0;
 // SPDX-License-Identifier: MIT
 
 import "hardhat/console.sol";
@@ -6,10 +7,8 @@ import "./dependencies/TheGraph/IStaking.sol";
 import "./dependencies/TheGraph/IDisputeManager.sol";
 import "./SubgraphBridgeHelpers.sol";
 
-pragma solidity ^0.8.0;
-
-// cleaned up version of SubgraphBridge.sol
-
+//@title SubgraphBridge
+//@notice SubgraphBridge is a contract that allows us to bridge subgraph data from The Graph's Decentralized Network to Ethereum in a cryptoeconomically secure manner.
 contract SubgraphBridge is SubgraphBridgeHelpers {
 
     address public theGraphStaking;
