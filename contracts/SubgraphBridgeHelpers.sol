@@ -50,9 +50,9 @@ contract SubgraphBridgeHelpers {
 
     struct QueryBridge {
         bytes32 queryTemplate;                      // hash of query stripped of all query variables
-        bytes32 subgraphDeploymentID;               // subgraph being queried
-        uint16 blockHashOffset;                     // where the pinned block hash starts in the query string
+        // bytes32 subgraphDeploymentID;               // subgraph being queried
         uint16 responseDataOffset;                  // index where the data starts in the response string
+        uint16 blockHashOffset;                     // where the pinned block hash starts in the query string
         BridgeDataType responseDataType;            // data type to be extracted from graphQL response string
         uint16[2] queryVariables;                   // type stored in first byte, location in last
         

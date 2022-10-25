@@ -105,9 +105,9 @@ contract SubgraphBridge is SubgraphBridgeHelpers {
         bytes32 queryBlockHash = _bytes32FromStringWithOffset(query, blockHashOffset); // todo: why +2?
         // bytes32 queryTemplateHash = queryBridges[queryBridgeID].queryTemplate;
         // bytes32 subgraphDeploymentID = queryBridges[queryBridgeID].subgraphDeploymentID;
+        // uint16 responseDataOffset = queryBridges[queryBridgeID].responseDataOffset;
         uint8 proposalFreezePeriod = queryBridges[queryBridgeID].proposalFreezePeriod;
         uint8 minimumSlashableGRT = queryBridges[queryBridgeID].minimumSlashableGRT;
-        // uint16 responseDataOffset = queryBridges[queryBridgeID].responseDataOffset;
 
         console.logBytes32(queryBlockHash);
         require(pinnedBlocks[queryBlockHash] + proposalFreezePeriod <= block.number, "proposal still frozen");
@@ -120,11 +120,8 @@ contract SubgraphBridge is SubgraphBridgeHelpers {
         require(proposals.stake[responseCID].totalStake.attestationStake > minimumSlashableGRT, "not enough stake");
 
         _extractData(queryBridgeID, requestCID, response);
-
-        // test_dataStreamIDs.push(queryBridgeID);
     }
 
-    //HELPER FUNCTIONS
     function pinBlockHash(uint256 blockNumber) public {
         pinnedBlocks[blockhash(blockNumber)] = blockNumber;
     }
