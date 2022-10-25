@@ -35,14 +35,10 @@ contract SubgraphBridge is SubgraphBridgeHelpers {
         theGraphStaking = staking;
         theGraphDisputeManager = disputeManager;
     }
-    /*
-    ------------------------------------------------------------
-    █▀█ █░█ █▄▄ █░░ █ █▀▀   █▀▀ █░█ █▄░█ █▀▀ ▀█▀ █ █▀█ █▄░█ █▀
-    █▀▀ █▄█ █▄█ █▄▄ █ █▄▄   █▀░ █▄█ █░▀█ █▄▄ ░█░ █ █▄█ █░▀█ ▄█
-    ------------------------------------------------------------
-     */
+    // ============================================================
+    // PUBLIC FUNCTIONS TO BE USED BY THE MASSES
+    // ============================================================
 
-     // actual functions that do stuff
     //@notice creates a query bridge
     //@dummy create a way to get subgraph query results back on chain
     function createQueryBridge(QueryBridge memory queryBridge) public {
@@ -122,6 +118,9 @@ contract SubgraphBridge is SubgraphBridgeHelpers {
         _extractData(queryBridgeID, requestCID, response);
     }
 
+    // ============================================================
+    // INTERNAL AND HELPER FUNCTIONS
+    // ============================================================
     function pinBlockHash(uint256 blockNumber) public {
         pinnedBlocks[blockhash(blockNumber)] = blockNumber;
     }
@@ -133,13 +132,6 @@ contract SubgraphBridge is SubgraphBridgeHelpers {
         QueryBridge memory bridge = queryBridges[queryBridgeID];
         return (_generateQueryTemplateHash(query, bridge.blockHashOffset, bridge.queryVariables) == bridge.queryTemplate);
     }
-
-    /*
-    --------------------------------------------------------------------
-    █ █▄░█ ▀█▀ █▀▀ █▀█ █▄░█ ▄▀█ █░░   █▀▀ █░█ █▄░█ █▀▀ ▀█▀ █ █▀█ █▄░█ █▀
-    █ █░▀█ ░█░ ██▄ █▀▄ █░▀█ █▀█ █▄▄   █▀░ █▄█ █░▀█ █▄▄ ░█░ █ █▄█ █░▀█ ▄█
-    --------------------------------------------------------------------
-    */
     function _extractData(bytes32 queryBridgeID, bytes32 requestCID, string calldata response) private {
         uint responseT = uint(queryBridges[queryBridgeID].responseDataType);
         console.log(responseT);

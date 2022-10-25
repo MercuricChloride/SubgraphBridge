@@ -144,7 +144,7 @@ contract SubgraphBridgeHelpers {
     }
 
     // Convert an hexadecimal character to raw byte
-    function _fromHexChar(uint8 c) public pure returns (uint8) {
+    function _fromHexChar(uint8 c) public pure returns (uint8 _rawByte) {
         if (bytes1(c) >= bytes1('0') && bytes1(c) <= bytes1('9')) {
             return c - uint8(bytes1('0'));
         }
