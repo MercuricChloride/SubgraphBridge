@@ -10,22 +10,21 @@ require("./tasks/bridge-tasks.ts");
 
 dotenv.config();
 
-
 const config: HardhatUserConfig = {
   solidity: "0.8.4",
   networks: {
     hardhat: {
       forking: {
         url: process.env.MAINNET_URL || "",
-        blockNumber: 15499226
-      }
+        blockNumber: 15798027,
+      },
     },
     ropsten: {
       url: process.env.ROPSTEN_URL || "",
       accounts:
         process.env.PRIVATE_KEY !== undefined ? [process.env.PRIVATE_KEY] : [],
     },
-    localhost: {}
+    localhost: {},
   },
   gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,
